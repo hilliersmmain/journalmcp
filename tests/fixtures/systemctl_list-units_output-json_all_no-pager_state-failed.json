@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "systemctl",
+    "list-units",
+    "--output=json",
+    "--all",
+    "--no-pager",
+    "--state=failed"
+  ],
+  "returncode": 0,
+  "stdout": "[]\n",
+  "stderr": ""
+}

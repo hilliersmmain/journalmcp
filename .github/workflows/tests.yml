@@ -1,0 +1,85 @@
+# The test suite, lint and type check, run somewhere other than the machine
+# that wrote them.
+#
+# Every check runs through the locked environment (`uv run --frozen`), the same
+# commands a fresh clone runs, so a green run here means the lockfile alone is
+# enough. Nothing here touches systemd: the suite replays recorded fixtures from
+# tests/fixtures/, and the one test that reaches the real systemd carries the
+# `live` marker, which pyproject.toml deselects by default and this file never
+# selects.
+#
+# No `sudo` anywhere: nothing here needs an apt package. uv arrives through
+# pipx, which the hosted image already carries, and uv installs the pinned dev
+# tools (pytest, ruff, mypy) from uv.lock.
+#
+# Pinned: uv to the version the lockfile was written with, and the tools through
+# the lockfile. An unpinned linter turns somebody else's release into a red build
+# on a commit that changed nothing.
+name: tests
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        run: pipx install uv==0.12.19
+
+      - name: Install the locked dev tools
+        run: uv sync --frozen
+
+      - name: Lint
+        run: uv run --frozen ruff check .
+
+      - name: Type check
+        run: uv run --frozen mypy --strict src
+
+      - name: Run the test suite
+        run: uv run --frozen pytest -q
+
+      # Not redundant with the suite: pytest reaches src/ through
+      # `pythonpath = ["src"]` in pyproject.toml, so a green suite says nothing
+      # about whether the shipped launcher can find the package. This runs what
+      # a stranger types, under a bare PATH with no virtual environment.
+      - name: Run the launcher a stranger would type
+        run: env -i HOME="$RUNNER_TEMP" PATH=/usr/bin:/bin PYTHONDONTWRITEBYTECODE=1 ./journalmcp --version
+
+  # The same job on arm64, the architecture of a Raspberry Pi. It runs only on
+  # the public repository: the guard below skips it on the private one. GitHub's
+  # hosted-runner documentation (read 2026-10-03) lists `ubuntu-24.04-arm` for
+  # private repositories too, but there it is a smaller machine billed against
+  # the account's minutes, while on a public repository it is free; the x64 job
+  # already gates every private push.
+  tests-arm64:
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-24.04-arm
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        run: pipx install uv==0.12.19
+
+      - name: Install the locked dev tools
+        run: uv sync --frozen
+
+      - name: Lint
+        run: uv run --frozen ruff check .
+
+      - name: Type check
+        run: uv run --frozen mypy --strict src
+
+      - name: Run the test suite
+        run: uv run --frozen pytest -q
+
+      - name: Run the launcher a stranger would type
+        run: env -i HOME="$RUNNER_TEMP" PATH=/usr/bin:/bin PYTHONDONTWRITEBYTECODE=1 ./journalmcp --version

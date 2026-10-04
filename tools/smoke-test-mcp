@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Smoke-test an MCP server launcher: send one real `initialize` request on
+# stdin, then close stdin, and expect `serverInfo` on stdout, nothing at all
+# on stderr, and a clean exit (0) once stdin is closed.
+#
+#   bash tools/smoke-test-mcp tools/journalmcp-mcp
+#
+# The protocol version is the newest one the SDK (mcp 2.3.0) negotiates through
+# the `initialize` handshake. Exit 0 on a pass, printing the serverInfo line;
+# 1 on a fail, printing both streams; 2 on a usage error.
+set -euo pipefail
+
+if [ "$#" -ne 1 ]; then
+    echo "usage: smoke-test-mcp WRAPPER" >&2
+    exit 2
+fi
+wrapper=$1
+if [ ! -x "$wrapper" ]; then
+    echo "smoke-test-mcp: $wrapper is not an executable file" >&2
+    exit 2
+fi
+
+request='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"smoke-test-mcp","version":"0"}}}'
+
+work=$(mktemp -d)
+trap 'rm -f "$work/stdout" "$work/stderr"; rmdir "$work"' EXIT
+
+rc=0
+printf '%s\n' "$request" | timeout 30 "$wrapper" >"$work/stdout" 2>"$work/stderr" || rc=$?
+
+# The server must also have exited 0 when stdin closed: a server that answers
+# and then hangs until `timeout` kills it (exit 124) is a failure, not a pass.
+if [ "$rc" -eq 0 ] && command grep -q '"serverInfo"' "$work/stdout" && [ ! -s "$work/stderr" ]; then
+    command grep -o '"serverInfo":{[^}]*}' "$work/stdout"
+    echo "smoke-test-mcp: PASS (server exit $rc)"
+    exit 0
+fi
+
+echo "smoke-test-mcp: FAIL (server exit $rc)" >&2
+echo "--- stdout ---" >&2
+cat "$work/stdout" >&2
+echo "--- stderr ---" >&2
+cat "$work/stderr" >&2
+exit 1

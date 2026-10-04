@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "systemctl",
+    "--user",
+    "cat",
+    "--no-pager",
+    "--",
+    "gcr-ssh-agent.service"
+  ],
+  "returncode": 0,
+  "stdout": "# /usr/lib/systemd/user/gcr-ssh-agent.service\n[Unit]\nDescription=GCR ssh-agent wrapper\n\nRequires=gcr-ssh-agent.socket\n\n[Service]\nType=simple\nStandardError=journal\nEnvironment=SSH_AUTH_SOCK=%t/gcr/ssh\nExecStart=/usr/libexec/gcr-ssh-agent --base-dir %t/gcr\nRestart=on-failure\n\n[Install]\nAlso=gcr-ssh-agent.socket\nWantedBy=graphical-session-pre.target\n",
+  "stderr": ""
+}

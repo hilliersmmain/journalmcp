@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "systemctl",
+    "--user",
+    "show",
+    "--no-pager",
+    "--property=ActiveState,SubState,LoadState,Description,ExecMainPID,Result",
+    "--",
+    "gcr-ssh-agent.service"
+  ],
+  "returncode": 0,
+  "stdout": "Description=GCR ssh-agent wrapper\nLoadState=loaded\nActiveState=active\nSubState=running\nResult=success\nExecMainPID=15619\n",
+  "stderr": ""
+}

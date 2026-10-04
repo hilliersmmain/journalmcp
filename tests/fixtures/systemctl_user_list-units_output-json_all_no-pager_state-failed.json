@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "systemctl",
+    "--user",
+    "list-units",
+    "--output=json",
+    "--all",
+    "--no-pager",
+    "--state=failed"
+  ],
+  "returncode": 0,
+  "stdout": "[{\"unit\":\"example-auth-check.service\",\"load\":\"loaded\",\"active\":\"failed\",\"sub\":\"failed\",\"description\":\"Example auth check service\"}]\n",
+  "stderr": ""
+}

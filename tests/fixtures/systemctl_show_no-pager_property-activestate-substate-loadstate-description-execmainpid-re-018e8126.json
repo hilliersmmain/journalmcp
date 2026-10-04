@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "systemctl",
+    "show",
+    "--no-pager",
+    "--property=ActiveState,SubState,LoadState,Description,ExecMainPID,Result",
+    "--",
+    "cron.service"
+  ],
+  "returncode": 0,
+  "stdout": "Description=Regular background program processing daemon\nLoadState=loaded\nActiveState=active\nSubState=running\nResult=success\nExecMainPID=12277\n",
+  "stderr": ""
+}

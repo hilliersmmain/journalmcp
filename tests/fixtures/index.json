@@ -1,0 +1,221 @@
+{
+  "fixtures": [
+    {
+      "argv": [
+        "journalctl",
+        "--list-boots",
+        "--output=json"
+      ],
+      "file": "journalctl_list-boots_output-json.json"
+    },
+    {
+      "argv": [
+        "journalctl",
+        "--output=json",
+        "--no-pager",
+        "--lines=20",
+        "--unit=cron.service"
+      ],
+      "file": "journalctl_output-json_no-pager_lines-20_unit-cron-service.json"
+    },
+    {
+      "argv": [
+        "journalctl",
+        "--output=json",
+        "--no-pager",
+        "--lines=50",
+        "--unit=cron.service"
+      ],
+      "file": "journalctl_output-json_no-pager_lines-50_unit-cron-service.json"
+    },
+    {
+      "argv": [
+        "journalctl",
+        "--user",
+        "--output=json",
+        "--no-pager",
+        "--lines=20",
+        "--unit=gcr-ssh-agent.service"
+      ],
+      "file": "journalctl_user_output-json_no-pager_lines-20_unit-gcr-ssh-agent-service.json"
+    },
+    {
+      "argv": [
+        "journalctl",
+        "--user",
+        "--output=json",
+        "--no-pager",
+        "--lines=50",
+        "--unit=gcr-ssh-agent.service"
+      ],
+      "file": "journalctl_user_output-json_no-pager_lines-50_unit-gcr-ssh-agent-service.json"
+    },
+    {
+      "argv": [
+        "journalctl",
+        "--output=json",
+        "--no-pager",
+        "--lines=5",
+        "--unit=synthetic-overflow.service"
+      ],
+      "file": "synthetic-journal-overflow.json"
+    },
+    {
+      "argv": [
+        "journalctl",
+        "--output=json",
+        "--no-pager",
+        "--lines=10",
+        "--unit=synthetic-oversized.service"
+      ],
+      "file": "synthetic-journal-oversized.json"
+    },
+    {
+      "argv": [
+        "journalctl",
+        "--output=json",
+        "--no-pager",
+        "--lines=20",
+        "--unit=synthetic-secrets.service"
+      ],
+      "file": "synthetic-journal-secrets.json"
+    },
+    {
+      "argv": [
+        "systemctl",
+        "show",
+        "--no-pager",
+        "--property=ActiveState,SubState,LoadState,Description,ExecMainPID,Result",
+        "--",
+        "synthetic-secrets.service"
+      ],
+      "file": "synthetic-show-secrets.json"
+    },
+    {
+      "argv": [
+        "systemctl",
+        "cat",
+        "--no-pager",
+        "--",
+        "synthetic-secrets.service"
+      ],
+      "file": "synthetic-unit-file-secrets.json"
+    },
+    {
+      "argv": [
+        "systemctl",
+        "cat",
+        "--no-pager",
+        "--",
+        "cron.service"
+      ],
+      "file": "systemctl_cat_no-pager_cron-service.json"
+    },
+    {
+      "argv": [
+        "systemctl",
+        "is-system-running"
+      ],
+      "file": "systemctl_is-system-running.json"
+    },
+    {
+      "argv": [
+        "systemctl",
+        "list-timers",
+        "--output=json",
+        "--all",
+        "--no-pager"
+      ],
+      "file": "systemctl_list-timers_output-json_all_no-pager.json"
+    },
+    {
+      "argv": [
+        "systemctl",
+        "list-units",
+        "--output=json",
+        "--all",
+        "--no-pager"
+      ],
+      "file": "systemctl_list-units_output-json_all_no-pager.json"
+    },
+    {
+      "argv": [
+        "systemctl",
+        "list-units",
+        "--output=json",
+        "--all",
+        "--no-pager",
+        "--state=failed"
+      ],
+      "file": "systemctl_list-units_output-json_all_no-pager_state-failed.json"
+    },
+    {
+      "argv": [
+        "systemctl",
+        "show",
+        "--no-pager",
+        "--property=ActiveState,SubState,LoadState,Description,ExecMainPID,Result",
+        "--",
+        "cron.service"
+      ],
+      "file": "systemctl_show_no-pager_property-activestate-substate-loadstate-description-execmainpid-re-018e8126.json"
+    },
+    {
+      "argv": [
+        "systemctl",
+        "--user",
+        "cat",
+        "--no-pager",
+        "--",
+        "gcr-ssh-agent.service"
+      ],
+      "file": "systemctl_user_cat_no-pager_gcr-ssh-agent-service.json"
+    },
+    {
+      "argv": [
+        "systemctl",
+        "--user",
+        "list-timers",
+        "--output=json",
+        "--all",
+        "--no-pager"
+      ],
+      "file": "systemctl_user_list-timers_output-json_all_no-pager.json"
+    },
+    {
+      "argv": [
+        "systemctl",
+        "--user",
+        "list-units",
+        "--output=json",
+        "--all",
+        "--no-pager"
+      ],
+      "file": "systemctl_user_list-units_output-json_all_no-pager.json"
+    },
+    {
+      "argv": [
+        "systemctl",
+        "--user",
+        "list-units",
+        "--output=json",
+        "--all",
+        "--no-pager",
+        "--state=failed"
+      ],
+      "file": "systemctl_user_list-units_output-json_all_no-pager_state-failed.json"
+    },
+    {
+      "argv": [
+        "systemctl",
+        "--user",
+        "show",
+        "--no-pager",
+        "--property=ActiveState,SubState,LoadState,Description,ExecMainPID,Result",
+        "--",
+        "gcr-ssh-agent.service"
+      ],
+      "file": "systemctl_user_show_no-pager_property-activestate-substate-loadstate-description-execmainp-271c4bab.json"
+    }
+  ]
+}

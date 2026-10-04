@@ -1,0 +1,522 @@
+#!/usr/bin/env python3
+"""Record one command's output as a scrubbed test fixture, in one step.
+
+    uv run --frozen tools/capture-fixtures -- systemctl --user list-units --output=json --all --no-pager
+
+The argv after `--` is run once through the package's real runner, exactly as
+the core would build it. Its stdout and stderr are scrubbed, checked, and
+written to tests/fixtures/<slug>.json with an entry in tests/fixtures/index.json
+that maps the exact argv to that file, which is what the fixture runner reads.
+
+The scrub, in this order:
+
+1. The live hostname and username (read at run time, never stored) become
+   `example-host` and `exampleuser`, including the `\\x2d` form systemd uses
+   when a name with a dash appears inside a unit name.
+2. MAC addresses become locally administered `02:00:00:00:xx:yy`; IPv4 and IPv6
+   addresses become addresses in the documentation ranges (192.0.2.0/24,
+   198.51.100.0/24, 203.0.113.0/24, 2001:db8::/32). Loopback, unspecified and
+   documentation addresses are left alone.
+3. The journal fields `_HOSTNAME` and `_MACHINE_ID` become placeholders, and so
+   does the live machine id wherever else it appears.
+4. The public gate's term list, read from the PATTERN= line of
+   tools/public-gate.sh, is applied case-insensitively. Shape rules run first
+   (a `[systemd-run]` description loses its command line; a session number
+   gains an `example-` prefix); then each remaining hit is looked up by the
+   SHA-256 of its lowercased text in TERM_RULES. A hit with no rule refuses the
+   whole fixture and prints the hit, so a new term never lands unnoticed. The
+   rules are keyed by digest because this file is itself export-bound and may
+   not spell a term.
+
+Every placeholder is derived from a hash of the real value, so the same value
+maps to the same placeholder on every run. Any text with a secret shape
+(bearer, password=, secret=, token=, an API key name, a private-key header) is
+refused outright: there is no placeholder rule for a secret.
+
+5. Disk and volume identifiers become zero-filled placeholders that keep their
+   shape: UUIDs, the 32-digit LUKS id, LVM volume and PV ids, NVMe EUIs and
+   FAT volume serials. The digits of one id map to the same placeholder in
+   every form it takes (dashed, undashed, `\\x2d`-escaped).
+6. If `tools/scrub-private.tsv` exists, each `literal<TAB>placeholder` row in
+   it is applied, longest literal first. That file is the maintainer's own list
+   (personal unit names, the disk model and serial, the services a recording
+   should not reveal) and is not part of the public export, so a fresh clone
+   runs without it.
+
+A last pass re-checks the finished fixture text and file name for the gate's
+terms, the secret shapes, the live values and any private literal, and refuses
+on any hit.
+
+`--rescrub` applies the same scrub to every recorded fixture already in the
+index (never a hand-written `synthetic-*` one) and rewrites the files it
+changes. Run it after adding a rule; a second run changes nothing.
+"""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import hashlib
+import ipaddress
+import json
+import re
+import socket
+import sys
+from collections import Counter
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+# No __pycache__ under src/: bytecode records the absolute source path.
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(REPO / "src"))
+
+from journalmcp.core import DEFAULT_TIMEOUT, JOURNALCTL_READ_FORMS, SYSTEMCTL_READ_VERBS
+from journalmcp.runner import INDEX_NAME, SubprocessRunner
+
+GATE = REPO / "tools" / "public-gate.sh"
+PRIVATE = REPO / "tools" / "scrub-private.tsv"
+FIXTURES = REPO / "tests" / "fixtures"
+COMMANDS = ("systemctl", "journalctl")
+
+HOST_PLACEHOLDER = "example-host"
+USER_PLACEHOLDER = "exampleuser"
+MACHINE_ID_PLACEHOLDER = "0123456789abcdef0123456789abcdef"
+COMMAND_LINE_PLACEHOLDER = "COMMAND-LINE-REMOVED"
+
+# sha256(lowercased gate hit)[:16] -> replacement. Each replacement keeps the
+# shape of what it replaces (a unit-name word stays a unit-name word).
+TERM_RULES: dict[str, str] = {
+    "22ea4545d7c557cc": "example-expander",  # a text-expander service name
+    "de9930da51a19aef": "example-mount",  # a cloud-drive mount service name
+    "bccc86317c281a19": "EXAMPLE.md",  # an instruction-file name in a description
+}
+
+SECRET_SHAPES = re.compile(
+    r"bearer |password=|secret=|token=|api[_-]?key|BEGIN [A-Z ]*PRIVATE KEY",
+    re.IGNORECASE,
+)
+
+_MAC = re.compile(r"(?<![0-9A-Fa-f:])[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}(?![0-9A-Fa-f:])")
+_IPV4 = re.compile(r"(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}(?!\d|\.\d)")
+_IPV6 = re.compile(r"(?<![0-9A-Za-z:])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?![0-9A-Za-z:])")
+_JOURNAL_FIELDS = {
+    "_HOSTNAME": HOST_PLACEHOLDER,
+    "_MACHINE_ID": MACHINE_ID_PLACEHOLDER,
+}
+_SYSTEMD_RUN = re.compile(r"\[systemd-run\] (?:[^\"\\\n]|\\.)*")
+_SESSION_NUMBER = re.compile(r"\b(sessions?) (\d+)\b", re.IGNORECASE)
+# A dash inside a recorded unit name is escaped by systemd as \x2d, and again
+# as \\x2d inside a JSON string.
+_SEP = r"(?:-|\\\\x2d|\\x2d)"
+_HEX = "[0-9A-Fa-f]"
+_END = "(?![0-9A-Za-z])"
+# Each rule names the id it replaces; `pre` is kept as it is.
+_DISK_IDS = [
+    re.compile(
+        rf"(?P<pre>(?:(?<=\\x2d)|(?<=\\x7b)|(?<![0-9A-Za-z])))"
+        rf"(?P<id>{_HEX}{{8}}{_SEP}{_HEX}{{4}}{_SEP}{_HEX}{{4}}{_SEP}{_HEX}{{4}}{_SEP}{_HEX}{{12}}){_END}"
+    ),
+    re.compile(rf"(?P<pre>LUKS[12]{_SEP})(?P<id>{_HEX}{{32}}){_END}"),
+    re.compile(rf"(?P<pre>LVM{_SEP})(?P<id>[0-9A-Za-z]{{64}}){_END}"),
+    re.compile(
+        rf"(?P<pre>pv{_SEP}uuid{_SEP})"
+        rf"(?P<id>[0-9A-Za-z]{{6}}(?:{_SEP}[0-9A-Za-z]{{4}}){{5}}{_SEP}[0-9A-Za-z]{{6}}){_END}"
+    ),
+    re.compile(rf"(?P<pre>eui\.)(?P<id>{_HEX}{{16,32}}){_END}"),
+    re.compile(rf"(?P<pre>uuid[-/])(?P<id>{_HEX}{{4}}{_SEP}{_HEX}{{4}}){_END}"),
+]
+_DOC_V4 = [ipaddress.ip_network(n) for n in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")]
+_DOC_V6 = ipaddress.ip_network("2001:db8::/32")
+
+
+class ScrubRefused(Exception):
+    """The text still carries something no rule may replace."""
+
+    def __init__(self, reason: str, hits: list[str]) -> None:
+        super().__init__(f"{reason}: {', '.join(repr(h) for h in hits)}")
+        self.reason = reason
+        self.hits = hits
+
+
+@dataclass(frozen=True)
+class Live:
+    """The values this machine would leak. Read at run time, never stored."""
+
+    hostname: str
+    username: str
+    machine_id: str
+
+
+def read_live() -> Live:
+    try:
+        machine_id = Path("/etc/machine-id").read_text(encoding="ascii").strip()
+    except OSError:
+        machine_id = ""
+    return Live(socket.gethostname(), getpass.getuser(), machine_id)
+
+
+def read_gate_pattern(gate: Path = GATE) -> re.Pattern[str]:
+    for line in gate.read_text(encoding="utf-8").splitlines():
+        match = re.fullmatch(r"PATTERN='(.*)'", line)
+        if match:
+            return re.compile(match.group(1), re.IGNORECASE)
+    raise SystemExit(f"capture-fixtures: no PATTERN= line in {gate}")
+
+
+def _digest(text: str) -> int:
+    return int.from_bytes(hashlib.sha256(text.encode("utf-8")).digest()[:8], "big")
+
+
+def term_key(hit: str) -> str:
+    return hashlib.sha256(hit.lower().encode("utf-8")).hexdigest()[:16]
+
+
+def _sub(
+    pattern: re.Pattern[str],
+    text: str,
+    replace: Callable[[re.Match[str]], str],
+    counts: Counter[str],
+    label: str,
+) -> str:
+    def counted(match: re.Match[str]) -> str:
+        new = replace(match)
+        if new != match.group(0):
+            counts[label] += 1
+        return new
+
+    return pattern.sub(counted, text)
+
+
+def _live_forms(value: str) -> list[str]:
+    """The value as printed, and as systemd escapes a dash inside a unit name
+    (raw, and again inside a JSON string)."""
+    forms = [value]
+    if "-" in value:
+        forms += [value.replace("-", "\\x2d"), value.replace("-", "\\\\x2d")]
+    return forms
+
+
+def _replace_live(text: str, value: str, placeholder: str, counts: Counter[str], label: str) -> str:
+    if not value:
+        return text
+    for form, new in zip(_live_forms(value), _live_forms(placeholder)):
+        pattern = re.compile(r"(?<![A-Za-z0-9])" + re.escape(form) + r"(?![A-Za-z0-9])", re.IGNORECASE)
+        text = _sub(pattern, text, _constant(new), counts, label)
+    return text
+
+
+def _constant(value: str) -> Callable[[re.Match[str]], str]:
+    def replace(match: re.Match[str]) -> str:
+        return value
+
+    return replace
+
+
+def fake_mac(real: str) -> str:
+    n = _digest(real.lower()) % 0xFFFF + 1
+    return f"02:00:00:00:{n >> 8:02x}:{n & 0xFF:02x}"
+
+
+def fake_ipv4(real: str) -> str:
+    n = _digest(real) % (3 * 254)
+    return str(_DOC_V4[n // 254].network_address + n % 254 + 1)
+
+
+def fake_ipv6(real: str) -> str:
+    n = _digest(real.lower()) % 0xFFFF + 1
+    return f"2001:db8::{n:x}"
+
+
+def _mac(match: re.Match[str]) -> str:
+    real = match.group(0)
+    if real.lower() in ("00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff") or real.lower().startswith("02:00:00:00:"):
+        return real
+    return fake_mac(real)
+
+
+def _ipv4(match: re.Match[str]) -> str:
+    real = match.group(0)
+    try:
+        address = ipaddress.IPv4Address(real)
+    except ValueError:
+        return real
+    if address.is_loopback or address.is_unspecified or any(address in n for n in _DOC_V4):
+        return real
+    return fake_ipv4(real)
+
+
+def _ipv6(match: re.Match[str]) -> str:
+    real = match.group(0)
+    try:
+        address = ipaddress.IPv6Address(real)
+    except ValueError:
+        return real
+    if address.is_loopback or address.is_unspecified or address in _DOC_V6:
+        return real
+    return fake_ipv6(real)
+
+
+def fake_disk_id(real: str) -> str:
+    """Zeros, then digits from a hash of the real id, in the real id's shape."""
+    parts = re.split(f"({_SEP})", real)
+    digits = "".join(parts[0::2])
+    keep = 12 if len(digits) >= 24 else len(digits) // 2
+    if digits.startswith("0" * (len(digits) - keep)):
+        return real  # already a placeholder
+    fake = "0" * (len(digits) - keep) + hashlib.sha256(digits.lower().encode()).hexdigest()[:keep]
+    if digits.upper() == digits and not digits.isdigit():
+        fake = fake.upper()
+    out, at = [], 0
+    for i, part in enumerate(parts):
+        if i % 2:
+            out.append(part)
+        else:
+            out.append(fake[at : at + len(part)])
+            at += len(part)
+    return "".join(out)
+
+
+def _disk_id(match: re.Match[str]) -> str:
+    return match.group("pre") + fake_disk_id(match.group("id"))
+
+
+def read_private_rules(path: Path = PRIVATE) -> list[tuple[str, str]]:
+    """The private list's rows, longest literal first; none if it is absent."""
+    if not path.exists():
+        return []
+    rules = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        literal, placeholder = line.split("\t")
+        rules.append((literal, placeholder))
+    return sorted(rules, key=lambda rule: -len(rule[0]))
+
+
+PRIVATE_RULES = read_private_rules()
+
+
+def _private_pattern(literal: str) -> re.Pattern[str]:
+    # A literal may start right after systemd's \x2d escape of a dash.
+    return re.compile(
+        r"(?:(?<=\\x2d)|(?<![A-Za-z0-9]))" + re.escape(literal) + r"(?![A-Za-z0-9])", re.IGNORECASE
+    )
+
+
+def _replace_private(text: str, literal: str, placeholder: str, counts: Counter[str]) -> str:
+    for form, new in zip(_live_forms(literal), _live_forms(placeholder)):
+        text = _sub(_private_pattern(form), text, _constant(new), counts, "private")
+    return text
+
+
+def _journal_field(name: str) -> re.Pattern[str]:
+    return re.compile(r'("' + re.escape(name) + r'"\s*:\s*")(?:[^"\\]|\\.)*(")')
+
+
+def _field_value(placeholder: str) -> Callable[[re.Match[str]], str]:
+    def replace(match: re.Match[str]) -> str:
+        return match.group(1) + placeholder + match.group(2)
+
+    return replace
+
+
+def scrub(
+    text: str, live: Live, gate: re.Pattern[str], private: list[tuple[str, str]] | None = None
+) -> tuple[str, Counter[str]]:
+    """Return the scrubbed text and a count of replacements per rule.
+
+    Raises ScrubRefused on a secret shape, or on a gate term with no rule.
+    """
+    counts: Counter[str] = Counter()
+    secrets = [m.group(0) for m in SECRET_SHAPES.finditer(text)]
+    if secrets:
+        raise ScrubRefused("secret shape in captured text", secrets)
+
+    text = _replace_live(text, live.hostname, HOST_PLACEHOLDER, counts, "hostname")
+    text = _replace_live(text, live.username, USER_PLACEHOLDER, counts, "username")
+
+    text = _sub(_MAC, text, _mac, counts, "mac")
+    text = _sub(_IPV4, text, _ipv4, counts, "ipv4")
+    text = _sub(_IPV6, text, _ipv6, counts, "ipv6")
+
+    for name, placeholder in _JOURNAL_FIELDS.items():
+        text = _sub(_journal_field(name), text, _field_value(placeholder), counts, name)
+    text = _replace_live(text, live.machine_id, MACHINE_ID_PLACEHOLDER, counts, "machine-id")
+
+    text = _sub(
+        _SYSTEMD_RUN, text, lambda m: "[systemd-run] " + COMMAND_LINE_PLACEHOLDER, counts, "systemd-run"
+    )
+    text = _sub(
+        _SESSION_NUMBER, text, lambda m: f"{m.group(1)} example-{m.group(2)}", counts, "session-number"
+    )
+
+    unruled: list[str] = []
+
+    def term(match: re.Match[str]) -> str:
+        replacement = TERM_RULES.get(term_key(match.group(0)))
+        if replacement is None:
+            unruled.append(match.group(0))
+            return match.group(0)
+        return replacement
+
+    text = _sub(gate, text, term, counts, "gate-term")
+    if unruled:
+        raise ScrubRefused("gate term with no placeholder rule", sorted(set(unruled)))
+
+    for rule in _DISK_IDS:
+        text = _sub(rule, text, _disk_id, counts, "disk-id")
+    for literal, placeholder in PRIVATE_RULES if private is None else private:
+        text = _replace_private(text, literal, placeholder, counts)
+    return text, counts
+
+
+def assert_clean(
+    text: str, live: Live, gate: re.Pattern[str], private: list[tuple[str, str]] | None = None
+) -> None:
+    """The last pass: refuse if anything the scrub exists to remove is left."""
+    hits = [m.group(0) for m in gate.finditer(text)]
+    for literal, _ in PRIVATE_RULES if private is None else private:
+        if any(_private_pattern(form).search(text) for form in _live_forms(literal)):
+            hits.append("<private literal>")
+    hits += [m.group(0) for m in SECRET_SHAPES.finditer(text)]
+    lowered = text.lower()
+    if live.hostname and live.hostname.lower() in lowered:
+        hits.append("<live hostname>")
+    if live.username and re.search(r"\b" + re.escape(live.username) + r"\b", text, re.IGNORECASE):
+        hits.append("<live username>")
+    if live.machine_id and live.machine_id.lower() in lowered:
+        hits.append("<live machine id>")
+    if hits:
+        raise ScrubRefused("still present after the scrub", sorted(set(hits)))
+
+
+def slug(argv: list[str]) -> str:
+    parts = [re.sub(r"[^a-z0-9]+", "-", token.lower()).strip("-") for token in argv]
+    name = "_".join(p for p in parts if p)
+    if len(name) > 100:
+        name = name[:90] + "-" + hashlib.sha256(json.dumps(argv).encode()).hexdigest()[:8]
+    return name + ".json"
+
+
+# The options the core itself emits, and no other: an option that reaches a
+# remote host (`--host`, `-H`, `--machine`, `-M`) or changes state (journalctl
+# has no verb; `--vacuum-time=`, `--rotate`, `--flush` are options) is not on
+# either list, so it is refused before anything runs. An entry ending in `=`
+# is a prefix (`--state=failed`); any other entry must match whole.
+SYSTEMCTL_OPTIONS = ("--user", "--output=json", "--all", "--no-pager", "--state=", "--type=", "--property=")
+JOURNALCTL_OPTIONS = (
+    "--user", "--output=json", "--list-boots", "--no-pager",
+    "--lines=", "--unit=", "--since=", "--until=", "--priority=", "--grep=",
+)
+
+
+def _option_allowed(token: str, options: tuple[str, ...]) -> bool:
+    return any(token.startswith(o) if o.endswith("=") else token == o for o in options)
+
+
+def check_argv(argv: list[str]) -> None:
+    """Accept only an argv the core could have built: a read verb or read form
+    first (after the optional `--user`), then only options the core emits."""
+    if not argv or argv[0] not in COMMANDS:
+        raise SystemExit(f"capture-fixtures: argv must start with one of {COMMANDS}, got {argv!r}")
+    rest = argv[2:] if argv[1:2] == ["--user"] else argv[1:]
+    if argv[0] == "systemctl":
+        verbs = [t for t in rest if not t.startswith("-")]
+        if not verbs or verbs[0] not in SYSTEMCTL_READ_VERBS:
+            raise SystemExit(f"capture-fixtures: {verbs[:1]!r} is not a read verb in {SYSTEMCTL_READ_VERBS}")
+        options = SYSTEMCTL_OPTIONS
+    else:
+        if not rest or rest[0] not in JOURNALCTL_READ_FORMS:
+            raise SystemExit(
+                f"capture-fixtures: {rest[:1]!r} is not a journalctl read form in {JOURNALCTL_READ_FORMS}"
+            )
+        options = JOURNALCTL_OPTIONS
+    for token in rest:
+        if token == "--":
+            break  # what follows is a unit name or a pattern, never an option
+        if token.startswith("-") and not _option_allowed(token, options):
+            raise SystemExit(f"capture-fixtures: {token!r} is not an option the core emits; refused")
+
+
+def update_index(directory: Path, argv: list[str], name: str) -> None:
+    path = directory / INDEX_NAME
+    entries = []
+    if path.exists():
+        entries = json.loads(path.read_text(encoding="utf-8"))["fixtures"]
+    entries = [e for e in entries if e["argv"] != argv and e["file"] != name]
+    entries.append({"argv": argv, "file": name})
+    entries.sort(key=lambda e: e["file"])
+    path.write_text(json.dumps({"fixtures": entries}, indent=2) + "\n", encoding="utf-8")
+
+
+def rescrub(directory: Path, dry_run: bool) -> int:
+    live = read_live()
+    gate = read_gate_pattern()
+    entries = json.loads((directory / INDEX_NAME).read_text(encoding="utf-8"))["fixtures"]
+    for name in sorted({e["file"] for e in entries if not e["file"].startswith("synthetic-")}):
+        path = directory / name
+        record = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            record["stdout"], out_counts = scrub(record["stdout"], live, gate)
+            record["stderr"], err_counts = scrub(record["stderr"], live, gate)
+            body = json.dumps(record, indent=2, ensure_ascii=False) + "\n"
+            assert_clean(body, live, gate)
+            assert_clean(name, live, gate)
+        except ScrubRefused as exc:
+            print(f"capture-fixtures: refused {name}: {exc}", file=sys.stderr)
+            return 1
+        counts = out_counts + err_counts
+        summary = ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "nothing replaced"
+        changed = body != path.read_text(encoding="utf-8")
+        if changed and not dry_run:
+            path.write_text(body, encoding="utf-8")
+        verb = ('would rewrite' if dry_run else 'rewrote') if changed else 'unchanged'
+        print(f"capture-fixtures: {verb} {name}: {summary}")
+    return 0
+
+
+def main(args: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="capture-fixtures", description=__doc__.splitlines()[0])
+    parser.add_argument("--fixtures-dir", type=Path, default=FIXTURES)
+    parser.add_argument("--dry-run", action="store_true", help="scrub and check, write nothing")
+    parser.add_argument("--rescrub", action="store_true", help="re-apply the scrub to every recorded fixture")
+    parser.add_argument("argv", nargs=argparse.REMAINDER, help="-- then the command to record")
+    ns = parser.parse_args(args)
+    if ns.rescrub:
+        return rescrub(ns.fixtures_dir, ns.dry_run)
+    argv = ns.argv[1:] if ns.argv[:1] == ["--"] else ns.argv
+    check_argv(argv)
+
+    live = read_live()
+    gate = read_gate_pattern()
+    result = SubprocessRunner().run(argv, DEFAULT_TIMEOUT)
+    try:
+        stdout, out_counts = scrub(result.stdout, live, gate)
+        stderr, err_counts = scrub(result.stderr, live, gate)
+        name = slug(argv)
+        record = {"argv": argv, "returncode": result.returncode, "stdout": stdout, "stderr": stderr}
+        body = json.dumps(record, indent=2, ensure_ascii=False) + "\n"
+        assert_clean(body, live, gate)
+        assert_clean(name, live, gate)
+    except ScrubRefused as exc:
+        print(f"capture-fixtures: refused {argv!r}: {exc}", file=sys.stderr)
+        return 1
+
+    counts = out_counts + err_counts
+    summary = ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "nothing replaced"
+    if result.returncode != 0:
+        print(f"capture-fixtures: note: exit code {result.returncode} recorded", file=sys.stderr)
+    if ns.dry_run:
+        print(f"capture-fixtures: dry run, {name}: {summary}")
+        return 0
+    ns.fixtures_dir.mkdir(parents=True, exist_ok=True)
+    (ns.fixtures_dir / name).write_text(body, encoding="utf-8")
+    update_index(ns.fixtures_dir, argv, name)
+    print(f"capture-fixtures: wrote {name} ({len(body)} bytes): {summary}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "journalmcp": {
+      "command": "/home/YOUR-USER/.local/bin/journalmcp-mcp"
+    }
+  }
+}

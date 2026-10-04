@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "systemctl",
+    "is-system-running"
+  ],
+  "returncode": 0,
+  "stdout": "running\n",
+  "stderr": ""
+}

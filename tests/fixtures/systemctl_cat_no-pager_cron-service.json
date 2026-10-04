@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "systemctl",
+    "cat",
+    "--no-pager",
+    "--",
+    "cron.service"
+  ],
+  "returncode": 0,
+  "stdout": "# /usr/lib/systemd/system/cron.service\n[Unit]\nDescription=Regular background program processing daemon\nDocumentation=man:cron(8)\nAfter=remote-fs.target nss-user-lookup.target\n\n[Service]\nEnvironmentFile=-/etc/default/cron\nExecStart=/usr/sbin/cron -f -P $EXTRA_OPTS\nIgnoreSIGPIPE=false\nKillMode=process\nRestart=on-failure\nSyslogFacility=cron\n\n[Install]\nWantedBy=multi-user.target\n",
+  "stderr": ""
+}

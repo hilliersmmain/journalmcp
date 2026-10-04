@@ -1,0 +1,46 @@
+[project]
+name = "journalmcp"
+version = "0.1.0"
+description = "Read-only MCP server and CLI over systemd and journald"
+# The floor is the Python on GitHub's ubuntu-24.04 runner, which is the oldest
+# interpreter that ever runs this code. Anything older would be a promise no
+# test keeps. docs/architecture.md records the choice.
+requires-python = ">=3.12"
+dependencies = [
+    "mcp==2.3.0",
+]
+
+# No [build-system] table on purpose: uv then treats this as a virtual project
+# and `uv sync` installs only the dev tools, never the package itself. The code
+# is reached through `pythonpath = ["src"]` (pytest) and the `./journalmcp`
+# launcher (everything else), so a fresh clone and CI see the same tree.
+
+[dependency-groups]
+dev = [
+    "mypy==2.4.0",
+    "pytest==9.1.1",
+    "ruff==0.16.10",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-m \"not live\""
+markers = [
+    "live: runs against the real systemd on this machine; off by default, never set in CI",
+]
+
+[tool.ruff]
+target-version = "py312"
+# `./journalmcp` and `tools/capture-fixtures` are Python with no `.py` on the
+# end, so ruff's own file discovery walks straight past them. Named one by one
+# rather than as `tools/*`: `tools/check-export-terms` is a shell script, and a
+# glob would make ruff parse it as Python. shellcheck is its linter.
+extend-include = [
+    "journalmcp",
+    "tools/capture-fixtures",
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true

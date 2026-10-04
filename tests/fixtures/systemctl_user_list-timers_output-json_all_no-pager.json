@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "systemctl",
+    "--user",
+    "list-timers",
+    "--output=json",
+    "--all",
+    "--no-pager"
+  ],
+  "returncode": 0,
+  "stdout": "[{\"next\":1791084300000000,\"left\":1791084300000000,\"last\":1791084025389820,\"passed\":29052370302,\"unit\":\"example-status-check.timer\",\"activates\":\"example-status-check.service\"},{\"next\":1791084328310234,\"left\":1791084328310234,\"last\":1791084028308365,\"passed\":29055288847,\"unit\":\"example-watchdog.timer\",\"activates\":\"example-watchdog.service\"},{\"next\":1791090000000000,\"left\":1791090000000000,\"last\":1791079225389406,\"passed\":24252369888,\"unit\":\"snap.firmware-updater.firmware-notifier.timer\",\"activates\":\"snap.firmware-updater.firmware-notifier.service\"},{\"next\":1791090100690115,\"left\":1791090100690115,\"last\":1791003670250668,\"passed\":0,\"unit\":\"example-backup.timer\",\"activates\":\"example-backup.service\"},{\"next\":1791122400000000,\"left\":1791122400000000,\"last\":1791055344110924,\"passed\":371091406,\"unit\":\"example-auth-check.timer\",\"activates\":\"example-auth-check.service\"},{\"next\":1791126000000000,\"left\":1791126000000000,\"last\":1789058746975219,\"passed\":0,\"unit\":\"example-reminder-a.timer\",\"activates\":\"example-reminder-a.service\"},{\"next\":1791142045387995,\"left\":1791142045387995,\"last\":1791055645387990,\"passed\":672368477,\"unit\":\"launchpadlib-cache-clean.timer\",\"activates\":\"launchpadlib-cache-clean.service\"},{\"next\":1791660257438513,\"left\":1791660257438513,\"last\":1791055457435476,\"passed\":484415958,\"unit\":\"ubuntu-insights-upload.timer\",\"activates\":\"ubuntu-insights-upload.service\"},{\"next\":1793685144212867,\"left\":1793685144212867,\"last\":1791055344111084,\"passed\":371091566,\"unit\":\"ubuntu-insights-collect.timer\",\"activates\":\"ubuntu-insights-collect.service\"},{\"next\":null,\"left\":null,\"last\":1790521242533084,\"passed\":0,\"unit\":\"example-reminder-b.timer\",\"activates\":\"example-reminder-b.service\"}]\n",
+  "stderr": ""
+}

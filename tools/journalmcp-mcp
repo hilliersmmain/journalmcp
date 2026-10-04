@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Launch the journalmcp MCP server over stdio with a deliberately minimal environment.
+#
+# Why a wrapper, and why this form:
+#   1. Nothing is resolved or downloaded at launch. The server runs from the
+#      checkout's locked environment (.venv, built by `uv sync --frozen` from
+#      uv.lock), so what starts is what the lockfile pins. A bare `uvx` or
+#      `npx -y` resolves packages every launch; that is why both are banned.
+#   2. `env -i` hands the server a clean slate: it does not inherit what the
+#      MCP client inherited (SSH_AUTH_SOCK, tokens, the desktop session's
+#      variables). Only the variables below pass, each for a stated reason
+#      (docs/security-model.md, item 10).
+#
+# The checkout defaults to $HOME/Projects/journalmcp; set JOURNALMCP_REPO to
+# use another. Install by copying this file into a directory on PATH.
+set -euo pipefail
+
+REPO="${JOURNALMCP_REPO:-$HOME/Projects/journalmcp}"
+PYTHON="$REPO/.venv/bin/python"
+
+if [ ! -f "$REPO/journalmcp" ]; then
+    echo "journalmcp-mcp: no launcher at $REPO/journalmcp (set JOURNALMCP_REPO to the checkout)" >&2
+    exit 1
+fi
+if [ ! -x "$PYTHON" ]; then
+    echo "journalmcp-mcp: no locked environment at $REPO/.venv (run: uv sync --frozen in $REPO)" >&2
+    exit 1
+fi
+if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+    echo "journalmcp-mcp: XDG_RUNTIME_DIR is not set; systemctl --user cannot reach the user manager" >&2
+    exit 1
+fi
+
+# HOME: the core's subprocesses and the SDK expect one; it carries no secret.
+# PATH: systemctl and journalctl live in /usr/bin; nothing user-writable.
+# XDG_RUNTIME_DIR: systemctl --user finds the user manager's bus through it.
+allow=(
+    HOME="$HOME"
+    PATH=/usr/bin:/bin
+    XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR"
+)
+# The redaction switch and its extra patterns, forwarded only when set: an
+# empty value is not "unset" to the core, which refuses it.
+if [ -n "${JOURNALMCP_REDACT+set}" ]; then
+    allow+=(JOURNALMCP_REDACT="$JOURNALMCP_REDACT")
+fi
+if [ -n "${JOURNALMCP_REDACT_PATTERNS+set}" ]; then
+    allow+=(JOURNALMCP_REDACT_PATTERNS="$JOURNALMCP_REDACT_PATTERNS")
+fi
+
+exec env -i "${allow[@]}" "$PYTHON" "$REPO/journalmcp" serve

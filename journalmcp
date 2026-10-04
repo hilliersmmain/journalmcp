@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+"""Launcher for journalmcp, the read-only systemd and journald query tool.
+
+`python3 -m journalmcp` cannot work from this checkout: the package lives under
+src/, and making that importable would mean installing it -- but the system
+Python on a current Debian or Ubuntu is marked EXTERNALLY-MANAGED (PEP 668), so
+there is no supported install to do.
+
+`pythonpath = ["src"]` in pyproject.toml fixes the import for pytest ONLY. It is
+pytest configuration and has no effect on a plain `python3 -m journalmcp`.
+
+This script resolves src/ from its own location instead, so it runs from any
+working directory under the system interpreter:
+
+    ./journalmcp units [--scope user|system] [--state S] [--type T] [--pattern P] [--json]
+    ./journalmcp failed [--scope user|system] [--json]
+    ./journalmcp timers [--scope user|system] [--json]
+    ./journalmcp --version
+
+The CLI imports only the standard library, so no virtual environment is needed.
+"""
+
+import pathlib
+import sys
+
+# No __pycache__ under src/: bytecode records the absolute path of its source,
+# which names the checkout's owner, and src/ is scanned for that name.
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "src"))
+
+from journalmcp.cli import main
+
+if __name__ == "__main__":
+    sys.exit(main())
